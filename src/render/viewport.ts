@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import type { Id } from '../core/ids';
-import type { GeometryDef, Project, SceneNode } from '../core/project';
-import type { ViewName } from '../editor/store';
+import { isEffectivelyLocked, isEffectivelyVisible, type GeometryDef, type Project, type SceneNode, type Vec3 } from '../core/project';
+import type { Tool, ViewName } from '../editor/store';
 
 export class ViewportUnavailableError extends Error {
   constructor(message: string) {
@@ -23,6 +24,8 @@ export interface AxisInfo {
 
 export interface ViewportEvents {
   onPick(id: Id | null, additive: boolean): void;
+  /** Fired while the move/rotate/scale gizmo is dragged. */
+  onTransform(id: Id, t: { position: Vec3; rotation: Vec3; scale: Vec3 }): void;
   onOrientation(axes: AxisInfo[]): void;
   onProblem(message: string): void;
 }
@@ -63,6 +66,7 @@ export class Viewport {
   private readonly orthographic: THREE.OrthographicCamera;
   private camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
   private readonly controls: OrbitControls;
+  private readonly transform: TransformControls;
   private readonly resizeObserver: ResizeObserver;
   private readonly raycaster = new THREE.Raycaster();
 
@@ -77,6 +81,8 @@ export class Viewport {
   private disposed = false;
   private pointerDown: { x: number; y: number; t: number } | null = null;
   private lastAxisKey = '';
+  private tool: Tool = 'move';
+  private ignoreClick = false;
 
   constructor(host: HTMLElement, events: ViewportEvents) {
     if (!isWebGLAvailable()) {
@@ -87,7 +93,7 @@ export class Viewport {
 
     this.renderer = createRenderer();
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.setClearColor(0x161a21, 1);
+    this.renderer.setClearColor(0x4b5563, 1);
     const canvas = this.renderer.domElement;
     canvas.style.display = 'block';
     canvas.style.width = '100%';
@@ -102,7 +108,7 @@ export class Viewport {
     const sun = new THREE.DirectionalLight(0xffffff, 1.6);
     sun.position.set(8, 14, 6);
     this.scene.add(sun);
-    this.grid = new THREE.GridHelper(40, 40, 0x5a6475, 0x2c333f);
+    this.grid = new THREE.GridHelper(40, 40, 0x9aa5b4, 0x6f7a89);
     this.scene.add(this.grid);
     this.axes = new THREE.AxesHelper(1.5);
     this.scene.add(this.axes);
@@ -121,8 +127,20 @@ export class Viewport {
     this.controls.minDistance = 0.5;
     this.controls.maxDistance = 500;
     this.controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    // Left drag orbits, right drag pans, middle drag zooms. The mouse wheel is handled by onWheel below.
+    this.controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
     this.controls.addEventListener('change', this.onControlsChange);
 
+    // Move / rotate / scale handles on the selected part (like Unity's gizmos).
+    this.transform = new TransformControls(this.camera, canvas);
+    this.transform.setSize(0.9);
+    this.transform.addEventListener('dragging-changed', this.onGizmoDragging);
+    this.transform.addEventListener('objectChange', this.onGizmoChange);
+    this.transform.addEventListener('change', this.onGizmoRender);
+    this.scene.add(this.transform.getHelper());
+
+    // Capture phase on the parent so our wheel zoom always runs, on mouse and trackpad alike.
+    host.addEventListener('wheel', this.onWheel, { passive: false, capture: true });
     canvas.addEventListener('pointerdown', this.onPointerDown);
     canvas.addEventListener('pointerup', this.onPointerUp);
     canvas.addEventListener('webglcontextlost', this.onContextLost);
@@ -140,12 +158,14 @@ export class Viewport {
     this.project = project;
     this.syncScene();
     this.rebuildSelection();
+    this.refreshGizmo();
     this.requestRender();
   }
 
   setSelection(ids: Id[]): void {
     this.selection = ids;
     this.rebuildSelection();
+    this.refreshGizmo();
     this.requestRender();
   }
 
@@ -158,9 +178,43 @@ export class Viewport {
     target.quaternion.copy(from.quaternion);
     this.camera = target;
     this.controls.object = target;
+    this.transform.camera = target;
     this.updateOrthoFrustum(dist);
     this.controls.update();
     this.emitOrientation(true);
+    this.requestRender();
+  }
+
+  setTool(tool: Tool): void {
+    this.tool = tool;
+    const hand = tool === 'hand';
+    this.controls.mouseButtons.LEFT = hand ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+    this.controls.touches.ONE = hand ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE;
+    if (tool === 'move') this.transform.setMode('translate');
+    else if (tool === 'rotate') this.transform.setMode('rotate');
+    else if (tool === 'scale') this.transform.setMode('scale');
+    this.refreshGizmo();
+    this.requestRender();
+  }
+
+  setSnap(on: boolean): void {
+    this.transform.setTranslationSnap(on ? 0.25 : null);
+    this.transform.setRotationSnap(on ? THREE.MathUtils.degToRad(15) : null);
+    this.transform.setScaleSnap(on ? 0.1 : null);
+  }
+
+  /** Zoom towards the orbit target. factor < 1 moves closer, factor > 1 moves away. */
+  zoomBy(factor: number): void {
+    if (!Number.isFinite(factor) || factor <= 0) return;
+    const target = this.controls.target;
+    const offset = this.camera.position.clone().sub(target);
+    const dist = offset.length();
+    if (dist < 1e-6) return;
+    const next = THREE.MathUtils.clamp(dist * factor, this.controls.minDistance, this.controls.maxDistance);
+    offset.setLength(next);
+    this.camera.position.copy(target).add(offset);
+    this.updateOrthoFrustum(next);
+    this.controls.update();
     this.requestRender();
   }
 
@@ -263,6 +317,13 @@ export class Viewport {
     this.disposed = true;
     this.resizeObserver.disconnect();
     const canvas = this.renderer.domElement;
+    this.host.removeEventListener('wheel', this.onWheel, { capture: true });
+    this.transform.removeEventListener('dragging-changed', this.onGizmoDragging);
+    this.transform.removeEventListener('objectChange', this.onGizmoChange);
+    this.transform.removeEventListener('change', this.onGizmoRender);
+    this.transform.detach();
+    this.scene.remove(this.transform.getHelper());
+    this.transform.dispose();
     canvas.removeEventListener('pointerdown', this.onPointerDown);
     canvas.removeEventListener('pointerup', this.onPointerUp);
     canvas.removeEventListener('webglcontextlost', this.onContextLost);
@@ -387,12 +448,17 @@ export class Viewport {
   // ------------------------------------------------------------ interaction
 
   private readonly onPointerDown = (e: PointerEvent): void => {
+    this.ignoreClick = this.transform.axis !== null || this.transform.dragging;
     this.pointerDown = { x: e.clientX, y: e.clientY, t: performance.now() };
   };
 
   private readonly onPointerUp = (e: PointerEvent): void => {
     const down = this.pointerDown;
     this.pointerDown = null;
+    if (this.ignoreClick) {
+      this.ignoreClick = false;
+      return;
+    }
     if (!down || e.button > 0) return;
     const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
     if (moved > CLICK_MAX_MOVE_PX || performance.now() - down.t > CLICK_MAX_MS) return;
@@ -429,6 +495,54 @@ export class Viewport {
       cur = cur.parent;
     }
     return null;
+  }
+
+  private readonly onWheel = (e: WheelEvent): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
+    const dy = THREE.MathUtils.clamp(e.deltaY * unit, -300, 300);
+    if (dy === 0) return;
+    this.zoomBy(Math.exp(dy * 0.0015));
+  };
+
+  private readonly onGizmoDragging = (e: unknown): void => {
+    const dragging = (e as { value?: unknown }).value === true;
+    this.controls.enabled = !dragging;
+    if (!dragging) this.ignoreClick = true;
+    this.requestRender();
+  };
+
+  private readonly onGizmoRender = (): void => {
+    this.requestRender();
+  };
+
+  private readonly onGizmoChange = (): void => {
+    const obj = this.transform.object;
+    if (!obj) return;
+    const id = this.findNodeId(obj);
+    if (!id) return;
+    const safe = (v: number): number => (Math.abs(v) < 0.01 ? (v < 0 ? -0.01 : 0.01) : v);
+    this.events.onTransform(id, {
+      position: [obj.position.x, obj.position.y, obj.position.z],
+      rotation: [obj.rotation.x, obj.rotation.y, obj.rotation.z],
+      scale: [safe(obj.scale.x), safe(obj.scale.y), safe(obj.scale.z)],
+    });
+  };
+
+  /** Shows the handles only for a single, unlocked, visible selected part when a transform tool is active. */
+  private refreshGizmo(): void {
+    const p = this.project;
+    let target: THREE.Object3D | undefined;
+    if (this.tool !== 'hand' && p && this.selection.length === 1) {
+      const id = this.selection[0];
+      if (p.nodes[id] && !isEffectivelyLocked(p, id) && isEffectivelyVisible(p, id)) target = this.objects.get(id);
+    }
+    if (target) {
+      if (this.transform.object !== target) this.transform.attach(target);
+    } else if (this.transform.object) {
+      this.transform.detach();
+    }
   }
 
   private readonly onContextLost = (e: Event): void => {

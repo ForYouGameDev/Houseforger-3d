@@ -15,6 +15,7 @@ import {
   getNode,
   groupNodes,
   hasNode,
+  moveNode,
   renameNode,
   renameProject,
   setGeometry,
@@ -40,6 +41,7 @@ import {
 } from '../core/presets';
 
 export type Mode = 'easy' | 'advanced';
+export type Tool = 'hand' | 'move' | 'rotate' | 'scale';
 export type ViewName = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
 
 export interface Notice {
@@ -51,12 +53,15 @@ export interface Notice {
 export interface Settings {
   showGrid: boolean;
   orthographic: boolean;
+  /** Snap the move / rotate / scale gizmo to 0.25 m, 15 degrees and 0.1. */
+  snap: boolean;
 }
 
 export interface EditorState {
   history: History<Project>;
   selection: Id[];
   mode: Mode;
+  tool: Tool;
   /** Built-in presets first, then the user's own. */
   presets: Preset[];
   notice: Notice | null;
@@ -77,9 +82,10 @@ export class EditorStore {
       history: createHistory(project, 100),
       selection: [],
       mode: 'easy',
+      tool: 'move',
       presets: [...builtinPresets(), ...userPresets],
       notice: null,
-      settings: { showGrid: true, orthographic: false },
+      settings: { showGrid: true, orthographic: false, snap: false },
       projectEpoch: 0,
     };
   }
@@ -181,6 +187,13 @@ export class EditorStore {
     });
   }
 
+  addEmptyGroup(): void {
+    this.attempt(() => {
+      const r = addNode(this.project, { name: 'Group', kind: 'group' });
+      this.commitProject(r.project, [r.id]);
+    });
+  }
+
   addPreset(presetId: string, position: Vec3 = [0, 0, 0]): void {
     const preset = this.state.presets.find((p) => p.id === presetId);
     if (!preset) {
@@ -269,6 +282,11 @@ export class EditorStore {
     });
   }
 
+  /** Drag and drop in the hierarchy. Keeps the part where it is on screen. */
+  reparent(id: Id, parentId: Id, index?: number): void {
+    this.attempt(() => this.commitProject(moveNode(this.project, id, parentId, index), [id]));
+  }
+
   groupSelected(): void {
     this.attempt(() => {
       const r = groupNodes(this.project, this.state.selection, 'Group');
@@ -352,6 +370,10 @@ export class EditorStore {
   }
 
   // ----------------------------------------------------------------- settings
+
+  setTool(tool: Tool): void {
+    if (tool !== this.state.tool) this.set({ tool });
+  }
 
   setMode(mode: Mode): void {
     this.set({ mode });

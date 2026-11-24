@@ -1,7 +1,7 @@
 {
   "name": "homeforge-3d",
   "productName": "HomeForge 3D",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Web-first 3D house builder: walls, doors, windows and reusable presets.",
   "author": "HomeForge",

@@ -4,7 +4,6 @@ import { PRESET_CATEGORIES, type PresetCategory } from '../core/presets';
 import { getNode, isEffectivelyLocked, type SceneNode } from '../core/project';
 import type { EditorState, EditorStore } from '../editor/store';
 import { NumberField, Section, TextField, Toggle } from './fields';
-import { SceneTree } from './SceneTree';
 
 interface Props {
   store: EditorStore;
@@ -13,7 +12,6 @@ interface Props {
 
 export function Inspector({ store, state }: Props) {
   const project = state.history.present;
-  const advanced = state.mode === 'advanced';
   const ids = state.selection;
 
   return (
@@ -45,11 +43,6 @@ export function Inspector({ store, state }: Props) {
         </Section>
       ) : null}
 
-      {advanced ? (
-        <Section title="Hierarchy" hint="Everything in your project. Click to select, Shift-click to add.">
-          <SceneTree store={store} state={state} />
-        </Section>
-      ) : null}
     </div>
   );
 }

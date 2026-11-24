@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
 import { EditorStore } from '../editor/store';
 import { deleteUserPreset, loadAutosave, loadUserPresets, saveAutosave, saveUserPresets } from '../storage/db';
 import { messageOf } from './actions';
+import { HierarchyPanel } from './HierarchyPanel';
 import { Inspector } from './Inspector';
+import { ProjectPanel } from './ProjectPanel';
+import { Splitter } from './Splitter';
 import { StatusBar } from './StatusBar';
-import { ToolPanel } from './ToolPanel';
-import { TopBar } from './TopBar';
+import { TopBar, type PanelName } from './TopBar';
 import { useEditorState, useMediaQuery } from './useEditor';
 import { ViewportPane, type ViewportApi } from './ViewportPane';
 
@@ -49,11 +51,43 @@ export default function App() {
   return <Editor store={store} />;
 }
 
+// ------------------------------------------------------------ panel sizes
+
+const LIMITS = {
+  left: { min: 180, max: 520, def: 260 },
+  right: { min: 240, max: 560, def: 320 },
+  bottom: { min: 110, max: 520, def: 210 },
+} as const;
+type SizeKey = keyof typeof LIMITS;
+
+function readSize(key: SizeKey): number {
+  try {
+    const raw = window.localStorage.getItem(`homeforge.size.${key}`);
+    const n = raw === null ? NaN : Number(raw);
+    if (Number.isFinite(n)) return Math.min(LIMITS[key].max, Math.max(LIMITS[key].min, n));
+  } catch {
+    /* storage can be blocked; defaults are fine */
+  }
+  return LIMITS[key].def;
+}
+
+function writeSize(key: SizeKey, value: number): void {
+  try {
+    window.localStorage.setItem(`homeforge.size.${key}`, String(Math.round(value)));
+  } catch {
+    /* ignore */
+  }
+}
+
 function Editor({ store }: { store: EditorStore }) {
   const state = useEditorState(store);
   const narrow = useMediaQuery('(max-width: 900px)');
-  const [leftOpen, setLeftOpen] = useState(!narrow);
-  const [rightOpen, setRightOpen] = useState(!narrow);
+  const [open, setOpen] = useState<Record<PanelName, boolean>>({ hierarchy: !narrow, inspector: !narrow, project: !narrow });
+  const [sizes, setSizes] = useState<Record<SizeKey, number>>(() => ({
+    left: readSize('left'),
+    right: readSize('right'),
+    bottom: readSize('bottom'),
+  }));
   const [autosavedAt, setAutosavedAt] = useState<Date | null>(null);
   const [savedMarker, setSavedMarker] = useState(store.project.updatedAt);
   const viewportApi = useRef<ViewportApi | null>(null);
@@ -66,8 +100,7 @@ function Editor({ store }: { store: EditorStore }) {
   useEffect(() => {
     if (lastNarrow.current !== narrow) {
       lastNarrow.current = narrow;
-      setLeftOpen(!narrow);
-      setRightOpen(!narrow);
+      setOpen({ hierarchy: !narrow, inspector: !narrow, project: !narrow });
     }
   }, [narrow]);
 
@@ -83,56 +116,89 @@ function Editor({ store }: { store: EditorStore }) {
   usePersistence(store, setAutosavedAt);
   useShortcuts(store, viewportApi);
 
-  const addPreset = useCallback(
-    (id: string) => store.addPreset(id, viewportApi.current?.getGroundTarget() ?? [0, 0, 0]),
-    [store],
-  );
+  const resize = useCallback((key: SizeKey, delta: number) => {
+    setSizes((prev) => {
+      const next = Math.min(LIMITS[key].max, Math.max(LIMITS[key].min, prev[key] + delta));
+      if (next === prev[key]) return prev;
+      writeSize(key, next);
+      return { ...prev, [key]: next };
+    });
+  }, []);
 
-  // On phones the side panels overlay the view; tapping the dimmed area closes them.
-  const overlayOpen = narrow && (leftOpen || rightOpen);
+  const togglePanel = (name: PanelName) => {
+    setOpen((prev) => {
+      const willOpen = !prev[name];
+      // On a phone the panels cover the 3D view, so only one can be open at a time.
+      if (narrow && willOpen) return { hierarchy: false, inspector: false, project: false, [name]: true };
+      return { ...prev, [name]: willOpen };
+    });
+  };
+
+  const overlayOpen = narrow && (open.hierarchy || open.inspector || open.project);
+
+  const layout = {
+    '--left-w': `${open.hierarchy && !narrow ? sizes.left : 0}px`,
+    '--right-w': `${open.inspector && !narrow ? sizes.right : 0}px`,
+    '--bottom-h': `${open.project && !narrow ? sizes.bottom : 0}px`,
+    '--sheet-h': `${Math.min(sizes.bottom + 120, 420)}px`,
+  } as CSSProperties;
 
   return (
-    <div className={`app mode-${state.mode} ${leftOpen ? 'left-open' : ''} ${rightOpen ? 'right-open' : ''}`}>
-      <TopBar
-        store={store}
-        state={state}
-        leftOpen={leftOpen}
-        rightOpen={rightOpen}
-        onToggleLeft={() => {
-          setLeftOpen((o) => !o);
-          if (narrow) setRightOpen(false);
-        }}
-        onToggleRight={() => {
-          setRightOpen((o) => !o);
-          if (narrow) setLeftOpen(false);
-        }}
-        hasUnsaved={hasUnsaved}
-        onSavedMark={() => setSavedMarker(store.project.updatedAt)}
-      />
+    <div
+      className={[
+        'app',
+        `mode-${state.mode}`,
+        open.hierarchy && !narrow ? 'has-left' : '',
+        open.inspector && !narrow ? 'has-right' : '',
+        open.project && !narrow ? 'has-bottom' : '',
+      ].join(' ')}
+      style={layout}
+    >
+      <TopBar store={store} state={state} open={open} onTogglePanel={togglePanel} hasUnsaved={hasUnsaved} onSavedMark={() => setSavedMarker(store.project.updatedAt)} />
 
-      <aside className="panel panel-left" aria-label="Tools" hidden={!leftOpen}>
-        <ToolPanel store={store} state={state} viewportApi={viewportApi} />
-      </aside>
+      <div className="workspace">
+        <aside className="panel area-hier" aria-label="Hierarchy" hidden={!open.hierarchy}>
+          <HierarchyPanel store={store} state={state} viewportApi={viewportApi} />
+        </aside>
 
-      <main className="center">
-        <ViewportPane store={store} state={state} apiRef={viewportApi} />
-        {overlayOpen ? (
-          <button
-            className="scrim"
-            aria-label="Close panel"
-            onClick={() => {
-              setLeftOpen(false);
-              setRightOpen(false);
-            }}
-          />
+        {open.hierarchy && !narrow ? (
+          <Splitter orientation="vertical" label="Resize hierarchy panel" className="area-split-l" onDrag={(d) => resize('left', d)} />
         ) : null}
-      </main>
 
-      <aside className="panel panel-right" aria-label="Properties" hidden={!rightOpen}>
-        <Inspector store={store} state={state} />
-      </aside>
+        <main className="center area-scene">
+          <ViewportPane store={store} state={state} apiRef={viewportApi} />
+          {overlayOpen ? (
+            <button
+              className="scrim"
+              aria-label="Close panel"
+              onClick={() => setOpen({ hierarchy: false, inspector: false, project: false })}
+            />
+          ) : null}
+        </main>
 
-      <StatusBar store={store} state={state} autosavedAt={autosavedAt} onAddPreset={addPreset} />
+        {open.project && !narrow ? (
+          <Splitter orientation="horizontal" label="Resize project panel" className="area-split-b" onDrag={(d) => resize('bottom', -d)} />
+        ) : null}
+
+        <section className="panel area-proj" aria-label="Project" hidden={!open.project}>
+          <ProjectPanel store={store} state={state} viewportApi={viewportApi} />
+        </section>
+
+        {open.inspector && !narrow ? (
+          <Splitter orientation="vertical" label="Resize inspector panel" className="area-split-r" onDrag={(d) => resize('right', -d)} />
+        ) : null}
+
+        <aside className="panel area-insp" aria-label="Inspector" hidden={!open.inspector}>
+          <div className="panel-header">
+            <span className="panel-title">Inspector</span>
+          </div>
+          <div className="panel-scroll">
+            <Inspector store={store} state={state} />
+          </div>
+        </aside>
+      </div>
+
+      <StatusBar store={store} state={state} autosavedAt={autosavedAt} />
     </div>
   );
 }
@@ -221,6 +287,20 @@ function useShortcuts(store: EditorStore, viewportApi: MutableRefObject<Viewport
         store.deleteSelected();
       } else if (!mod && key === 'f') {
         viewportApi.current?.frame();
+      } else if (!mod && key === 'q') {
+        store.setTool('hand');
+      } else if (!mod && key === 'w') {
+        store.setTool('move');
+      } else if (!mod && key === 'e') {
+        store.setTool('rotate');
+      } else if (!mod && key === 'r') {
+        store.setTool('scale');
+      } else if (!mod && (e.key === '+' || e.key === '=')) {
+        e.preventDefault();
+        viewportApi.current?.zoomBy(0.8);
+      } else if (!mod && (e.key === '-' || e.key === '_')) {
+        e.preventDefault();
+        viewportApi.current?.zoomBy(1.25);
       } else if (e.key === 'Escape') {
         store.select([]);
       }

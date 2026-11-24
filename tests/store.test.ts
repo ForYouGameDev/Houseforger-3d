@@ -106,3 +106,71 @@ test('loading a project clears history and bumps the epoch', () => {
   assert.equal(s.getState().projectEpoch, epoch + 1);
   assert.equal(s.getState().history.past.length, 0);
 });
+
+test('tool defaults to move and can be switched', () => {
+  const s = new EditorStore();
+  assert.equal(s.getState().tool, 'move');
+  s.setTool('hand');
+  assert.equal(s.getState().tool, 'hand');
+  assert.equal(s.getState().settings.snap, false);
+  s.setSettings({ snap: true });
+  assert.equal(s.getState().settings.snap, true);
+});
+
+test('addEmptyGroup creates a selected empty group', () => {
+  const s = new EditorStore();
+  s.addEmptyGroup();
+  const id = s.getState().selection[0];
+  assert.equal(getNode(s.project, id).kind, 'group');
+  assert.equal(getNode(s.project, id).children.length, 0);
+});
+
+test('reparent moves a part into a group at an index and rejects bad drops', () => {
+  const s = new EditorStore();
+  s.addPrimitive('box');
+  s.addPrimitive('box');
+  s.addEmptyGroup();
+  const [a, b, g] = getNode(s.project, s.project.rootId).children;
+  s.reparent(a, g);
+  s.reparent(b, g, 0);
+  assert.deepEqual(getNode(s.project, g).children, [b, a]);
+  assert.equal(getNode(s.project, a).parentId, g);
+
+  const before = s.project;
+  s.reparent(g, g); // into itself
+  assert.equal(s.project, before);
+  assert.equal(s.getState().notice?.kind, 'error');
+  s.reparent(g, a); // into a mesh
+  assert.equal(s.project, before);
+
+  s.undo();
+  s.undo();
+  assert.equal(getNode(s.project, a).parentId, s.project.rootId);
+});
+
+test('tools, snap and empty groups', () => {
+  const s = new EditorStore();
+  assert.equal(s.getState().tool, 'move');
+  s.setTool('rotate');
+  assert.equal(s.getState().tool, 'rotate');
+  s.setSettings({ snap: true });
+  assert.equal(s.getState().settings.snap, true);
+  s.addEmptyGroup();
+  const id = s.getState().selection[0];
+  assert.equal(getNode(s.project, id).kind, 'group');
+});
+
+test('reparent moves parts into groups, keeps world position, refuses cycles', () => {
+  const s = new EditorStore();
+  s.addEmptyGroup();
+  const group = s.getState().selection[0];
+  s.addPrimitive('box', [3, 0, 2]);
+  const box = s.getState().selection[0];
+  s.reparent(box, group);
+  assert.equal(getNode(s.project, box).parentId, group);
+  s.reparent(group, box); // a group cannot go inside its own child
+  assert.equal(s.getState().notice?.kind, 'error');
+  assert.equal(getNode(s.project, group).parentId, s.project.rootId);
+  s.undo();
+  assert.equal(getNode(s.project, box).parentId, s.project.rootId);
+});

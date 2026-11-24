@@ -2,11 +2,31 @@
 
 Easy 3D house builder. Place walls, doors, windows, floors, stairs and roofs, save any part as a **preset**, and export/import presets as files. Runs as a website, a Windows EXE, and an Android app (APK/AAB). Works offline.
 
-## Status (checkpoint 1)
+## Status (checkpoint 2)
 
-Built and tested here: project model, scene tree (group/ungroup/hide/lock/delete/duplicate), bounded undo/redo, preset create/export/import with strict validation, built-in presets, editor store. **31 automated tests pass.**
+**Tested here (36 automated tests pass):** project model, hierarchy operations, bounded undo/redo, preset create/export/import with strict validation, built-in presets, editor store (tools, snap, re-parenting).
 
-Written but **not yet compiled or run** (this workspace had no network for `npm install`): React UI, Three.js viewport, IndexedDB storage, Electron shell, GitHub workflows. Run the first-run checks below and send me any errors; I will fix them.
+**Written but not compiled here** (this workspace has no network for `npm install`, so React/Three.js types were unavailable): the UI, viewport, storage, Electron shell and workflows. Run the first-run checks below and send any error.
+
+## Layout (Unity style)
+
+- Left: **Hierarchy** (collapse, double-click rename, drag and drop to re-parent, hide/lock, Group/Ungroup/Duplicate/Delete)
+- Center: **Scene** with tools Hand / Move / Rotate / Scale, Snap, Frame, Reset, standard views, perspective/iso, orientation gizmo
+- Right: **Inspector** (position, rotation, scale, size, material, save as preset)
+- Bottom: **Project** (Parts library, Shapes, Materials, Import/Export)
+- Drag the thin bars between panels to resize. On phones the panels slide over the 3D view.
+
+## Controls
+
+| Action | Mouse / keyboard | Touch |
+|---|---|---|
+| Orbit | left drag | one finger |
+| Pan | right drag, or Hand tool (Q) | two fingers |
+| Zoom | mouse wheel, `+` / `-`, or on-screen **+ / - / fit** buttons (hold to keep zooming) | pinch or buttons |
+| Tools | Q hand, W move, E rotate, R scale | tool buttons |
+| Frame | F | Frame button |
+| Undo / redo | Ctrl+Z / Ctrl+Shift+Z | top bar |
+| Duplicate / delete | Ctrl+D / Del | Hierarchy buttons |
 
 ## First run
 
